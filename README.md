@@ -117,3 +117,43 @@ read keyboard event
 If a pure event tap is not reliable enough for modifier behavior, we can later
 add a virtual HID backend. That should be a later step, not part of the first
 prototype.
+
+## Running
+
+Build the daemon:
+
+```sh
+swift build
+```
+
+Run it:
+
+```sh
+swift run keebs --debug
+```
+
+The first run needs permissions in System Settings > Privacy & Security:
+
+- Accessibility
+- Input Monitoring
+
+After granting permission, restart the daemon.
+
+For event-level debugging, run:
+
+```sh
+swift run keebs --trace
+```
+
+If `Ctrl-Space` does not appear in the trace, macOS or another tool may be
+handling it before the annotated session tap. Try the earlier session tap:
+
+```sh
+swift run keebs --trace --tap session
+```
+
+The default is:
+
+```sh
+swift run keebs --trace --tap annotated
+```
