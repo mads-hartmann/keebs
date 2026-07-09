@@ -37,6 +37,7 @@ private final class KeebsDaemon {
     private let debug: Bool
     private let trace: Bool
     private let tapLocation: EventTapLocation
+    private let hud = MarkModeHUD()
     private var markMode = false
     private var suppressCtrlSpaceKeyUp = false
     private var suppressCtrlGKeyUp = false
@@ -51,6 +52,9 @@ private final class KeebsDaemon {
     }
 
     func start() -> Never {
+        NSApplication.shared.setActivationPolicy(.accessory)
+        NSApplication.shared.finishLaunching()
+
         guard checkAccessibilityPermission(), checkListenEventPermission() else {
             fputs(
                 """
@@ -185,9 +189,8 @@ private final class KeebsDaemon {
         traceKey("down", keyCode: keyCode, flags: flags)
 
         if isCtrlSpace(keyCode: keyCode, flags: flags) {
-            markMode.toggle()
+            setMarkMode(!markMode, reason: "ctrl-space")
             suppressCtrlSpaceKeyUp = true
-            log(markMode ? "mark mode on" : "mark mode off")
             return nil
         }
 
@@ -310,8 +313,21 @@ private final class KeebsDaemon {
             return
         }
 
-        markMode = false
-        log("mark mode off: \(reason)")
+        setMarkMode(false, reason: reason)
+    }
+
+    private func setMarkMode(_ isActive: Bool, reason: String) {
+        guard markMode != isActive else {
+            return
+        }
+
+        markMode = isActive
+        if isActive {
+            hud.show()
+        } else {
+            hud.hide()
+        }
+        log("mark mode \(isActive ? "on" : "off"): \(reason)")
     }
 
     private func log(_ message: String) {
@@ -331,6 +347,142 @@ private final class KeebsDaemon {
             "[keebs] key \(phase): code=\(keyCode) flags=\(flags.keebsDescription)\n",
             stderr
         )
+    }
+}
+
+private final class MarkModeHUD {
+    private var panel: NSPanel?
+    private let panelSize = MarkModeHUDView.preferredSize
+
+    func show() {
+        DispatchQueue.main.async {
+            self.ensurePanel()
+            self.positionPanel()
+            self.panel?.orderFrontRegardless()
+        }
+    }
+
+    func hide() {
+        DispatchQueue.main.async {
+            self.panel?.orderOut(nil)
+        }
+    }
+
+    private func ensurePanel() {
+        guard panel == nil else {
+            return
+        }
+
+        let panel = NSPanel(
+            contentRect: NSRect(origin: .zero, size: panelSize),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+
+        panel.backgroundColor = .clear
+        panel.collectionBehavior = [
+            .canJoinAllSpaces,
+            .fullScreenAuxiliary,
+            .ignoresCycle,
+            .stationary
+        ]
+        panel.hasShadow = true
+        panel.ignoresMouseEvents = true
+        panel.isMovable = false
+        panel.isOpaque = false
+        panel.level = .screenSaver
+        panel.isReleasedWhenClosed = false
+        panel.contentView = MarkModeHUDView(frame: NSRect(origin: .zero, size: panelSize))
+
+        self.panel = panel
+    }
+
+    private func positionPanel() {
+        guard let panel else {
+            return
+        }
+
+        let screenFrame = (NSScreen.main ?? NSScreen.screens.first)?.frame ?? .zero
+        let origin = NSPoint(
+            x: screenFrame.midX - panelSize.width / 2,
+            y: screenFrame.maxY - panelSize.height - 72
+        )
+
+        panel.setFrameOrigin(origin)
+    }
+}
+
+private final class MarkModeHUDView: NSView {
+    static let horizontalPadding: CGFloat = 16
+    static let verticalPadding: CGFloat = 8
+    static let fontSize: CGFloat = NSFont.smallSystemFontSize + 1
+
+    static var preferredSize: NSSize {
+        let textSize = attributedText().size()
+        return NSSize(
+            width: ceil(textSize.width) + horizontalPadding * 2,
+            height: ceil(textSize.height) + verticalPadding * 2
+        )
+    }
+
+    override var isFlipped: Bool {
+        true
+    }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+
+        let backgroundBounds = bounds.insetBy(dx: 0.5, dy: 0.5)
+        let backgroundPath = NSBezierPath(roundedRect: backgroundBounds, xRadius: 8, yRadius: 8)
+        NSColor(calibratedWhite: 0.08, alpha: 0.86).setFill()
+        backgroundPath.fill()
+
+        NSColor(calibratedWhite: 1.0, alpha: 0.18).setStroke()
+        backgroundPath.lineWidth = 1
+        backgroundPath.stroke()
+
+        let text = Self.attributedText()
+        let textSize = text.size()
+        let textRect = NSRect(
+            x: Self.horizontalPadding,
+            y: (bounds.height - textSize.height) / 2,
+            width: ceil(textSize.width),
+            height: ceil(textSize.height)
+        )
+
+        text.draw(in: textRect)
+    }
+
+    private static func attributedText() -> NSAttributedString {
+        let font = NSFont.menuBarFont(ofSize: fontSize)
+        return NSAttributedString(
+            string: "Shift lock on",
+            attributes: [
+                .font: font,
+                .foregroundColor: NSColor.white
+            ]
+        )
+    }
+}
+
+private extension NSFont {
+    static func menuBarFont(ofSize size: CGFloat) -> NSFont {
+        if let font = NSFont(name: ".AppleSystemUIFont", size: size) {
+            return font
+        }
+
+        return NSFont.systemFont(ofSize: size == 0 ? NSFont.smallSystemFontSize : size)
     }
 }
 

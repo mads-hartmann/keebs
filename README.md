@@ -32,6 +32,7 @@ commands extend the current selection.
   operating system.
 - Editing/action keys deactivate mark mode.
 - Regular typing deactivates mark mode and sends the key as-is.
+- A small HUD is shown while mark mode is active.
 
 Example pipeline:
 
