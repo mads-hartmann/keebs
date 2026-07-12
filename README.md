@@ -76,6 +76,30 @@ The first version should deactivate mark mode on:
 Typing letters should not get `Shift` applied. Caps Lock already exists for
 that. A typed character should leave mark mode and pass through unchanged.
 
+## Hyper Chords
+
+`Right Command` acts as a personal hyper key. Tap it to open a HUD and latch
+hyper mode, then release it and enter the chord normally. The real Command
+modifier is suppressed so apps do not see it. Pressing `Right Command` again
+cancels hyper mode.
+
+The current chord map is hardcoded:
+
+- Tap `Right Command`, then `r`: Raycast layer
+  - `w`: `open -g raycast://extensions/raycast/navigation/switch-windows`
+  - `c`: `open -g raycast://extensions/raycast/clipboard-history/clipboard-history`
+  - `k`: `open -g raycast://extensions/raycast/raycast/confetti`
+  - `s`: `open -g raycast://extensions/raycast/snippets/search-snippets`
+  - `i`: `open -g raycast://extensions/raycast/screenshots/search-screenshots`
+  - `n`: `open -g raycast://extensions/raycast/raycast-notes/raycast-notes`
+- Tap `Right Command`, then `a`: Applications layer
+  - `t`: `open -a Ghostty`
+  - `e`: `open -a "Visual Studio Code"`
+
+Completing a chord launches the target with `/usr/bin/open`, closes the HUD, and
+exits hyper mode immediately. Pressing an unknown key while the HUD is open also
+closes the HUD, consumes the key, and does nothing.
+
 ## Non-Goals
 
 - General Karabiner JSON compatibility
@@ -84,8 +108,6 @@ that. A typed character should leave mark mode and pass through unchanged.
 - Input-source rules
 - Mouse key emulation
 - Emacs movement bindings
-- Hyper key layers
-- Shell/app launchers
 - Multiple profiles
 
 Those can come later if they become useful, but the project starts with the
@@ -109,6 +131,7 @@ The event pipeline should be:
 ```text
 read keyboard event
   -> normalize key and modifiers
+  -> handle hyper-key chords and app launchers
   -> handle mark mode toggles/cancellations
   -> if mark mode is active and event is navigation, add Shift
   -> if mark mode is active and event is typing/action, deactivate mark mode
