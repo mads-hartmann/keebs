@@ -3,12 +3,23 @@ import CoreGraphics
 import Foundation
 
 private enum KeyCode {
+    static let a: CGKeyCode = 0
+    static let s: CGKeyCode = 1
     static let space: CGKeyCode = 49
+    static let c: CGKeyCode = 8
+    static let e: CGKeyCode = 14
     static let g: CGKeyCode = 5
+    static let i: CGKeyCode = 34
+    static let k: CGKeyCode = 40
+    static let n: CGKeyCode = 45
+    static let r: CGKeyCode = 15
+    static let t: CGKeyCode = 17
     static let v: CGKeyCode = 9
+    static let w: CGKeyCode = 13
     static let x: CGKeyCode = 7
 
     static let escape: CGKeyCode = 53
+    static let rightCommand: CGKeyCode = 54
     static let deleteOrBackspace: CGKeyCode = 51
     static let deleteForward: CGKeyCode = 117
 
@@ -33,12 +44,46 @@ private enum KeyCode {
     ]
 }
 
+private enum HyperMode: Equatable {
+    case inactive
+    case top
+    case layer(HyperLayer)
+
+    var isActive: Bool {
+        self != .inactive
+    }
+}
+
+private enum HyperLayer {
+    case raycast
+    case applications
+}
+
+private struct OpenCommand {
+    let label: String
+    let arguments: [String]
+}
+
+private struct HUDOption {
+    let key: String
+    let label: String
+}
+
+private struct HUDContent {
+    let title: String
+    let options: [HUDOption]
+}
+
 private final class KeebsDaemon {
     private let debug: Bool
     private let trace: Bool
     private let tapLocation: EventTapLocation
-    private let hud = MarkModeHUD()
+    private let hud = KeebsHUD()
+    private let launchQueue = DispatchQueue(label: "com.mads-hartmann.keebs.open")
     private var markMode = false
+    private var hyperMode = HyperMode.inactive
+    private var rightCommandIsDown = false
+    private var suppressedHyperKeyUps = Set<CGKeyCode>()
     private var suppressCtrlSpaceKeyUp = false
     private var suppressCtrlGKeyUp = false
 
@@ -115,11 +160,13 @@ private final class KeebsDaemon {
             queue: nil
         ) { [weak self] _ in
             self?.deactivateMarkMode(reason: "app switch")
+            self?.deactivateHyperMode(reason: "app switch")
         }
     }
 
     private func installEventTap() {
         let mask = Self.eventMask([
+            .flagsChanged,
             .keyDown,
             .keyUp,
             .leftMouseDown,
@@ -170,7 +217,11 @@ private final class KeebsDaemon {
 
         case .leftMouseDown, .rightMouseDown, .otherMouseDown:
             deactivateMarkMode(reason: "mouse click")
+            deactivateHyperMode(reason: "mouse click")
             return Unmanaged.passUnretained(event)
+
+        case .flagsChanged:
+            return handleFlagsChanged(event)
 
         case .keyDown:
             return handleKeyDown(proxy: proxy, event: event)
@@ -183,10 +234,41 @@ private final class KeebsDaemon {
         }
     }
 
+    private func handleFlagsChanged(_ event: CGEvent) -> Unmanaged<CGEvent>? {
+        let keyCode = event.keyCode
+        traceKey("flags", keyCode: keyCode, flags: event.flags)
+
+        guard keyCode == KeyCode.rightCommand else {
+            return Unmanaged.passUnretained(event)
+        }
+
+        if rightCommandIsDown {
+            rightCommandIsDown = false
+        } else {
+            rightCommandIsDown = true
+            if hyperMode.isActive {
+                deactivateHyperMode(reason: "right-command pressed again")
+            } else {
+                activateHyperTopLayer()
+            }
+        }
+
+        return nil
+    }
+
     private func handleKeyDown(proxy: CGEventTapProxy, event: CGEvent) -> Unmanaged<CGEvent>? {
         let keyCode = event.keyCode
         let flags = event.flags
         traceKey("down", keyCode: keyCode, flags: flags)
+
+        if hyperMode.isActive {
+            return handleHyperKeyDown(event)
+        }
+
+        if rightCommandIsDown {
+            suppressedHyperKeyUps.insert(keyCode)
+            return nil
+        }
 
         if isCtrlSpace(keyCode: keyCode, flags: flags) {
             setMarkMode(!markMode, reason: "ctrl-space")
@@ -221,6 +303,14 @@ private final class KeebsDaemon {
         let keyCode = event.keyCode
         traceKey("up", keyCode: keyCode, flags: event.flags)
 
+        if suppressedHyperKeyUps.remove(keyCode) != nil {
+            return nil
+        }
+
+        if hyperMode.isActive || rightCommandIsDown {
+            return nil
+        }
+
         if suppressCtrlSpaceKeyUp, keyCode == KeyCode.space {
             suppressCtrlSpaceKeyUp = false
             return nil
@@ -237,6 +327,40 @@ private final class KeebsDaemon {
         }
 
         return Unmanaged.passUnretained(event)
+    }
+
+    private func handleHyperKeyDown(_ event: CGEvent) -> Unmanaged<CGEvent>? {
+        let keyCode = event.keyCode
+        suppressedHyperKeyUps.insert(keyCode)
+
+        switch hyperMode {
+        case .inactive:
+            return nil
+
+        case .top:
+            if keyCode == KeyCode.r {
+                setHyperMode(.layer(.raycast), reason: "raycast layer")
+                return nil
+            }
+
+            if keyCode == KeyCode.a {
+                setHyperMode(.layer(.applications), reason: "applications layer")
+                return nil
+            }
+
+            deactivateHyperMode(reason: "unknown top-layer key \(keyCode)")
+            return nil
+
+        case .layer(let layer):
+            guard let command = hyperCommand(layer: layer, keyCode: keyCode) else {
+                deactivateHyperMode(reason: "unknown \(layer) key \(keyCode)")
+                return nil
+            }
+
+            launch(command)
+            deactivateHyperMode(reason: "launched \(command.label)")
+            return nil
+        }
     }
 
     private func isCtrlSpace(keyCode: CGKeyCode, flags: CGEventFlags) -> Bool {
@@ -308,6 +432,141 @@ private final class KeebsDaemon {
         }
     }
 
+    private func activateHyperTopLayer() {
+        deactivateMarkMode(reason: "hyper started")
+        setHyperMode(.top, reason: "right-command down")
+    }
+
+    private func deactivateHyperMode(reason: String) {
+        guard hyperMode.isActive else {
+            return
+        }
+
+        setHyperMode(.inactive, reason: reason)
+    }
+
+    private func setHyperMode(_ mode: HyperMode, reason: String) {
+        guard hyperMode != mode else {
+            return
+        }
+
+        hyperMode = mode
+
+        if let content = hudContent(for: mode) {
+            hud.show(content)
+        } else {
+            hud.hide()
+        }
+
+        log("hyper mode \(hyperModeDescription(mode)): \(reason)")
+    }
+
+    private func hudContent(for mode: HyperMode) -> HUDContent? {
+        switch mode {
+        case .inactive:
+            return nil
+        case .top:
+            return HUDContent(
+                title: "Hyper",
+                options: [
+                    HUDOption(key: "r", label: "Raycast"),
+                    HUDOption(key: "a", label: "Applications")
+                ]
+            )
+        case .layer(.raycast):
+            return HUDContent(
+                title: "Raycast",
+                options: [
+                    HUDOption(key: "w", label: "Windows"),
+                    HUDOption(key: "c", label: "Clipboard"),
+                    HUDOption(key: "k", label: "Confetti"),
+                    HUDOption(key: "s", label: "Snippets"),
+                    HUDOption(key: "i", label: "Screenshots"),
+                    HUDOption(key: "n", label: "Notes")
+                ]
+            )
+        case .layer(.applications):
+            return HUDContent(
+                title: "Applications",
+                options: [
+                    HUDOption(key: "t", label: "Ghostty"),
+                    HUDOption(key: "e", label: "Code")
+                ]
+            )
+        }
+    }
+
+    private func hyperCommand(layer: HyperLayer, keyCode: CGKeyCode) -> OpenCommand? {
+        switch (layer, keyCode) {
+        case (.raycast, KeyCode.w):
+            return OpenCommand(
+                label: "Raycast Windows",
+                arguments: ["-g", "raycast://extensions/raycast/navigation/switch-windows"]
+            )
+        case (.raycast, KeyCode.c):
+            return OpenCommand(
+                label: "Raycast Clipboard",
+                arguments: ["-g", "raycast://extensions/raycast/clipboard-history/clipboard-history"]
+            )
+        case (.raycast, KeyCode.k):
+            return OpenCommand(
+                label: "Raycast Confetti",
+                arguments: ["-g", "raycast://extensions/raycast/raycast/confetti"]
+            )
+        case (.raycast, KeyCode.s):
+            return OpenCommand(
+                label: "Raycast Snippets",
+                arguments: ["-g", "raycast://extensions/raycast/snippets/search-snippets"]
+            )
+        case (.raycast, KeyCode.i):
+            return OpenCommand(
+                label: "Raycast Screenshots",
+                arguments: ["-g", "raycast://extensions/raycast/screenshots/search-screenshots"]
+            )
+        case (.raycast, KeyCode.n):
+            return OpenCommand(
+                label: "Raycast Notes",
+                arguments: ["-g", "raycast://extensions/raycast/raycast-notes/raycast-notes"]
+            )
+        case (.applications, KeyCode.t):
+            return OpenCommand(label: "Ghostty", arguments: ["-a", "Ghostty"])
+        case (.applications, KeyCode.e):
+            return OpenCommand(label: "Visual Studio Code", arguments: ["-a", "Visual Studio Code"])
+        default:
+            return nil
+        }
+    }
+
+    private func launch(_ command: OpenCommand) {
+        launchQueue.async { [debug] in
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+            process.arguments = command.arguments
+
+            do {
+                try process.run()
+                if debug {
+                    fputs("[keebs] launched \(command.label)\n", stderr)
+                }
+            } catch {
+                fputs("[keebs] failed to launch \(command.label): \(error.localizedDescription)\n", stderr)
+            }
+        }
+    }
+
+    private func hyperModeDescription(_ mode: HyperMode) -> String {
+        switch mode {
+        case .inactive:
+            return "off"
+        case .top:
+            return "top"
+        case .layer(.raycast):
+            return "raycast"
+        case .layer(.applications):
+            return "applications"
+        }
+    }
+
     private func deactivateMarkMode(reason: String) {
         guard markMode else {
             return
@@ -323,7 +582,14 @@ private final class KeebsDaemon {
 
         markMode = isActive
         if isActive {
-            hud.show()
+            hud.show(
+                HUDContent(
+                    title: "Mark",
+                    options: [
+                        HUDOption(key: "shift", label: "Navigation")
+                    ]
+                )
+            )
         } else {
             hud.hide()
         }
@@ -350,13 +616,14 @@ private final class KeebsDaemon {
     }
 }
 
-private final class MarkModeHUD {
+private final class KeebsHUD {
     private var panel: NSPanel?
-    private let panelSize = MarkModeHUDView.preferredSize
+    private var hudView: KeebsHUDView?
 
-    func show() {
+    func show(_ content: HUDContent) {
         DispatchQueue.main.async {
             self.ensurePanel()
+            self.update(content)
             self.positionPanel()
             self.panel?.orderFrontRegardless()
         }
@@ -368,11 +635,21 @@ private final class MarkModeHUD {
         }
     }
 
+    private func update(_ content: HUDContent) {
+        let panelSize = KeebsHUDView.preferredSize(for: content)
+        hudView?.content = content
+        hudView?.frame = NSRect(origin: .zero, size: panelSize)
+        panel?.setContentSize(panelSize)
+    }
+
     private func ensurePanel() {
         guard panel == nil else {
             return
         }
 
+        let content = HUDContent(title: "", options: [])
+        let panelSize = KeebsHUDView.preferredSize(for: content)
+        let hudView = KeebsHUDView(frame: NSRect(origin: .zero, size: panelSize), content: content)
         let panel = NSPanel(
             contentRect: NSRect(origin: .zero, size: panelSize),
             styleMask: [.borderless, .nonactivatingPanel],
@@ -393,8 +670,9 @@ private final class MarkModeHUD {
         panel.isOpaque = false
         panel.level = .screenSaver
         panel.isReleasedWhenClosed = false
-        panel.contentView = MarkModeHUDView(frame: NSRect(origin: .zero, size: panelSize))
+        panel.contentView = hudView
 
+        self.hudView = hudView
         self.panel = panel
     }
 
@@ -403,6 +681,7 @@ private final class MarkModeHUD {
             return
         }
 
+        let panelSize = panel.frame.size
         let screenFrame = (NSScreen.main ?? NSScreen.screens.first)?.frame ?? .zero
         let origin = NSPoint(
             x: screenFrame.midX - panelSize.width / 2,
@@ -413,13 +692,19 @@ private final class MarkModeHUD {
     }
 }
 
-private final class MarkModeHUDView: NSView {
+private final class KeebsHUDView: NSView {
     static let horizontalPadding: CGFloat = 16
     static let verticalPadding: CGFloat = 8
     static let fontSize: CGFloat = NSFont.smallSystemFontSize + 1
 
-    static var preferredSize: NSSize {
-        let textSize = attributedText().size()
+    var content: HUDContent {
+        didSet {
+            needsDisplay = true
+        }
+    }
+
+    static func preferredSize(for content: HUDContent) -> NSSize {
+        let textSize = attributedText(for: content).size()
         return NSSize(
             width: ceil(textSize.width) + horizontalPadding * 2,
             height: ceil(textSize.height) + verticalPadding * 2
@@ -430,7 +715,8 @@ private final class MarkModeHUDView: NSView {
         true
     }
 
-    override init(frame frameRect: NSRect) {
+    init(frame frameRect: NSRect, content: HUDContent) {
+        self.content = content
         super.init(frame: frameRect)
         wantsLayer = true
     }
@@ -452,7 +738,7 @@ private final class MarkModeHUDView: NSView {
         backgroundPath.lineWidth = 1
         backgroundPath.stroke()
 
-        let text = Self.attributedText()
+        let text = Self.attributedText(for: content)
         let textSize = text.size()
         let textRect = NSRect(
             x: Self.horizontalPadding,
@@ -464,10 +750,15 @@ private final class MarkModeHUDView: NSView {
         text.draw(in: textRect)
     }
 
-    private static func attributedText() -> NSAttributedString {
+    private static func attributedText(for content: HUDContent) -> NSAttributedString {
         let font = NSFont.menuBarFont(ofSize: fontSize)
+        let optionText = content.options
+            .map { "\($0.key) \($0.label)" }
+            .joined(separator: "   ")
+        let text = optionText.isEmpty ? content.title : "\(content.title): \(optionText)"
+
         return NSAttributedString(
-            string: "Shift lock on",
+            string: text,
             attributes: [
                 .font: font,
                 .foregroundColor: NSColor.white
