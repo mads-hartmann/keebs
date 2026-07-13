@@ -1,7 +1,7 @@
 # keebs
 
-A tiny macOS keyboard remapper focused on one workflow: Emacs-style active
-mark selection.
+A tiny macOS keyboard remapper for personal key mappings, Emacs-style active
+mark selection, and latched hyper-key chords.
 
 The narrow scope is: toggle a mark state, then add `Shift` to keypresses while
 that state is active. Since most macOS apps already interpret shifted movement
@@ -28,8 +28,7 @@ commands extend the current selection.
 
 - `Ctrl-Space` toggles mark mode.
 - While mark mode is active, movement keypresses get `Shift` added.
-- Existing movement bindings are left to the user, Karabiner, the app, or the
-  operating system.
+- Configured movement bindings are applied before mark mode.
 - Editing/action keys deactivate mark mode.
 - Regular typing deactivates mark mode and sends the key as-is.
 - A small HUD is shown while mark mode is active.
@@ -43,9 +42,44 @@ Down Arrow
   -> emit Shift-Down Arrow
 ```
 
-If another tool or app maps `Ctrl-n` to `Down Arrow`, this project should only
-care about the final key event it sees and add `Shift` while mark mode is
-active.
+`keebs` maps `Ctrl-n` to `Down Arrow` before mark mode sees it. Consequently,
+`Ctrl-Space Ctrl-n` follows the same path as `Ctrl-Space Down Arrow` and emits
+`Shift-Down Arrow`.
+
+## Mapping Layers
+
+Chord mappings are defined as `KeyMapping` values in `Sources/keebs/main.swift`.
+A mapping translates one key plus modifiers to another key plus modifiers. The
+same translation is retained until key-up, so applications always receive a
+matching down/up pair. Caps Lock is mapped to Left Control through macOS's HID
+mapping facility while keebs is running. keebs removes that mapping on shutdown;
+an independent watchdog also removes it if keebs is killed or crashes. To avoid
+destroying user configuration, keebs refuses to install its mapping when another
+HID mapping already exists.
+
+```mermaid
+flowchart LR
+    A["Physical key event"] --> B["Lifecycle-scoped HID mapping<br/>⇪ → ⌃"]
+    B --> C["Hyper-key chords"]
+    C --> D["Chord mappings<br/>⌃N → ↓"]
+    D --> E["Mark mode / Shift Lock<br/>active: add ⇧"]
+    E --> F["Application<br/>⇧↓"]
+```
+
+The built-in configuration mirrors the remaining basic mappings from the
+previous Karabiner-Elements configuration:
+
+- `Caps Lock` → `Control`
+- `Command-Control-H/J/K/L` → left/down/up/right
+- `Command-Control-A/S/W/D` → left/down/up/right
+- `Control-P/B/F/N` → up/left/right/down
+- `Control-G` → `Escape`
+- `Control-V` → `Page Down`; `Option-V` → `Page Up`
+- `Option-B/F` → `Option-Left/Right`
+- `Option-D` → `Option-Delete Forward`
+
+Caps Lock is the only mapping outside the event-tap layer because macOS updates
+modifier state before the tap receives the event.
 
 ## Initial Keys
 
@@ -57,8 +91,8 @@ The first version should add `Shift` to navigation keys such as:
 - navigation keys with existing modifiers, such as `Option-Right Arrow` or
   `Command-Left Arrow`
 
-It should not define Emacs movement bindings like `Ctrl-n` or `Ctrl-f` in the
-MVP. Those can be handled elsewhere for now.
+The initial configuration includes the Emacs movement bindings that previously
+lived in Karabiner-Elements.
 
 ## Deactivation
 
@@ -107,7 +141,6 @@ closes the HUD, consumes the key, and does nothing.
 - App-specific rules
 - Input-source rules
 - Mouse key emulation
-- Emacs movement bindings
 - Multiple profiles
 
 Those can come later if they become useful, but the project starts with the
@@ -126,12 +159,13 @@ elsewhere, and only add `Shift` while mark mode is active.
 
 Start with a small Swift daemon using a `CGEventTap`.
 
-The event pipeline should be:
+The event pipeline is:
 
 ```text
 read keyboard event
   -> normalize key and modifiers
   -> handle hyper-key chords and app launchers
+  -> apply configured key mappings
   -> handle mark mode toggles/cancellations
   -> if mark mode is active and event is navigation, add Shift
   -> if mark mode is active and event is typing/action, deactivate mark mode

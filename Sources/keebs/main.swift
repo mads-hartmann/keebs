@@ -1,6 +1,71 @@
 import AppKit
 import CoreGraphics
+import Darwin
 import Foundation
+
+private let capsLockToControlHIDMapping = """
+{"UserKeyMapping":[{
+  "HIDKeyboardModifierMappingSrc":0x700000039,
+  "HIDKeyboardModifierMappingDst":0x7000000e0
+}]}
+"""
+
+@discardableResult
+private func setHIDMapping(_ mapping: String) -> Bool {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/hidutil")
+    process.arguments = ["property", "--set", mapping]
+    process.standardOutput = FileHandle.nullDevice
+
+    do {
+        try process.run()
+        process.waitUntilExit()
+        return process.terminationStatus == 0
+    } catch {
+        return false
+    }
+}
+
+private func currentHIDMapping() -> String? {
+    let process = Process()
+    let output = Pipe()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/hidutil")
+    process.arguments = ["property", "--get", "UserKeyMapping"]
+    process.standardOutput = output
+
+    do {
+        try process.run()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            return nil
+        }
+        return String(data: output.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)
+    } catch {
+        return nil
+    }
+}
+
+private func HIDMappingIsEmpty(_ output: String) -> Bool {
+    let compact = output.filter { !$0.isWhitespace }
+    return compact == "()" || compact == "(null)"
+}
+
+private func clearHIDMapping() {
+    setHIDMapping("{\"UserKeyMapping\":[]}")
+}
+
+private func runHIDWatchdog(parentPID: pid_t) -> Never {
+    signal(SIGHUP, SIG_IGN)
+    signal(SIGINT, SIG_IGN)
+    signal(SIGTERM, SIG_IGN)
+
+    while kill(parentPID, 0) == 0 || errno == EPERM {
+        Thread.sleep(forTimeInterval: 0.25)
+    }
+
+    clearHIDMapping()
+    exit(0)
+}
 
 private enum KeyCode {
     static let a: CGKeyCode = 0
@@ -12,6 +77,13 @@ private enum KeyCode {
     static let i: CGKeyCode = 34
     static let k: CGKeyCode = 40
     static let n: CGKeyCode = 45
+    static let p: CGKeyCode = 35
+    static let b: CGKeyCode = 11
+    static let d: CGKeyCode = 2
+    static let f: CGKeyCode = 3
+    static let h: CGKeyCode = 4
+    static let j: CGKeyCode = 38
+    static let l: CGKeyCode = 37
     static let r: CGKeyCode = 15
     static let t: CGKeyCode = 17
     static let v: CGKeyCode = 9
@@ -43,6 +115,70 @@ private enum KeyCode {
         upArrow
     ]
 }
+
+private struct KeyChord {
+    let keyCode: CGKeyCode
+    let modifiers: CGEventFlags
+}
+
+private struct KeyMapping {
+    let from: KeyChord
+    let to: KeyChord
+    let allowsOtherModifiers: Bool
+
+    init(
+        _ fromKeyCode: CGKeyCode,
+        _ fromModifiers: CGEventFlags = [],
+        to toKeyCode: CGKeyCode,
+        _ toModifiers: CGEventFlags = [],
+        allowsOtherModifiers: Bool = false
+    ) {
+        from = KeyChord(keyCode: fromKeyCode, modifiers: fromModifiers)
+        to = KeyChord(keyCode: toKeyCode, modifiers: toModifiers)
+        self.allowsOtherModifiers = allowsOtherModifiers
+    }
+
+    func matches(keyCode: CGKeyCode, flags: CGEventFlags) -> Bool {
+        guard keyCode == from.keyCode else {
+            return false
+        }
+
+        let modifiers = flags.intersection(.keyMappingModifiers)
+        return allowsOtherModifiers
+            ? modifiers.contains(from.modifiers)
+            : modifiers == from.modifiers
+    }
+
+    func apply(to event: CGEvent) {
+        let preservedModifiers = event.flags.subtracting(from.modifiers)
+        event.setIntegerValueField(.keyboardEventKeycode, value: Int64(to.keyCode))
+        event.flags = preservedModifiers.union(to.modifiers)
+    }
+}
+
+// These chord mappings replace the remaining basic rules in ~/.config/karabiner.
+// They deliberately run before mark mode (Shift Lock) in the event pipeline.
+private let keyMappings: [KeyMapping] = [
+    KeyMapping(KeyCode.h, [.maskCommand, .maskControl], to: KeyCode.leftArrow, allowsOtherModifiers: true),
+    KeyMapping(KeyCode.j, [.maskCommand, .maskControl], to: KeyCode.downArrow, allowsOtherModifiers: true),
+    KeyMapping(KeyCode.k, [.maskCommand, .maskControl], to: KeyCode.upArrow, allowsOtherModifiers: true),
+    KeyMapping(KeyCode.l, [.maskCommand, .maskControl], to: KeyCode.rightArrow, allowsOtherModifiers: true),
+    KeyMapping(KeyCode.a, [.maskCommand, .maskControl], to: KeyCode.leftArrow, allowsOtherModifiers: true),
+    KeyMapping(KeyCode.s, [.maskCommand, .maskControl], to: KeyCode.downArrow, allowsOtherModifiers: true),
+    KeyMapping(KeyCode.w, [.maskCommand, .maskControl], to: KeyCode.upArrow, allowsOtherModifiers: true),
+    KeyMapping(KeyCode.d, [.maskCommand, .maskControl], to: KeyCode.rightArrow, allowsOtherModifiers: true),
+
+    KeyMapping(KeyCode.d, .maskAlternate, to: KeyCode.deleteForward, .maskAlternate),
+    KeyMapping(KeyCode.p, .maskControl, to: KeyCode.upArrow, allowsOtherModifiers: true),
+    KeyMapping(KeyCode.b, .maskControl, to: KeyCode.leftArrow, allowsOtherModifiers: true),
+    KeyMapping(KeyCode.f, .maskControl, to: KeyCode.rightArrow, allowsOtherModifiers: true),
+    KeyMapping(KeyCode.g, .maskControl, to: KeyCode.escape, allowsOtherModifiers: true),
+    KeyMapping(KeyCode.n, .maskControl, to: KeyCode.downArrow, allowsOtherModifiers: true),
+    KeyMapping(KeyCode.b, .maskAlternate, to: KeyCode.leftArrow, .maskAlternate),
+    KeyMapping(KeyCode.f, .maskAlternate, to: KeyCode.rightArrow, .maskAlternate),
+    KeyMapping(KeyCode.v, .maskControl, to: KeyCode.pageDown, allowsOtherModifiers: true),
+    KeyMapping(KeyCode.v, .maskAlternate, to: KeyCode.pageUp, allowsOtherModifiers: true)
+]
 
 private enum HyperMode: Equatable {
     case inactive
@@ -86,6 +222,10 @@ private final class KeebsDaemon {
     private var suppressedHyperKeyUps = Set<CGKeyCode>()
     private var suppressCtrlSpaceKeyUp = false
     private var suppressCtrlGKeyUp = false
+    private var activeKeyMappings: [CGKeyCode: KeyMapping] = [:]
+    private var hardwareMappingInstalled = false
+    private var HIDWatchdog: Process?
+    private var terminationSignalSources: [DispatchSourceSignal] = []
 
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
@@ -113,11 +253,70 @@ private final class KeebsDaemon {
         }
 
         checkPostEventPermission()
+        installCapsLockMapping()
+        installTerminationHandlers()
         installAppActivationObserver()
         installEventTap()
         log("started with \(tapLocation.description) tap")
         CFRunLoopRun()
         fatalError("CFRunLoopRun returned unexpectedly")
+    }
+
+    private func installCapsLockMapping() {
+        guard let currentMapping = currentHIDMapping() else {
+            fputs("warning: could not read the current macOS HID key mapping; Caps Lock was not remapped\n", stderr)
+            return
+        }
+
+        guard HIDMappingIsEmpty(currentMapping) else {
+            fputs("warning: an existing macOS HID key mapping is active; Caps Lock was not remapped\n", stderr)
+            return
+        }
+
+        let watchdog = Process()
+        watchdog.executableURL = URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL
+        watchdog.arguments = ["--hid-watchdog", String(ProcessInfo.processInfo.processIdentifier)]
+
+        do {
+            try watchdog.run()
+        } catch {
+            fputs("warning: could not start the HID cleanup watchdog; Caps Lock was not remapped\n", stderr)
+            return
+        }
+
+        HIDWatchdog = watchdog
+        guard setHIDMapping(capsLockToControlHIDMapping) else {
+            kill(watchdog.processIdentifier, SIGKILL)
+            HIDWatchdog = nil
+            fputs("warning: could not map Caps Lock to Control\n", stderr)
+            return
+        }
+
+        hardwareMappingInstalled = true
+        log("installed lifecycle-scoped Caps Lock -> Left Control mapping")
+    }
+
+    private func installTerminationHandlers() {
+        for signalNumber in [SIGINT, SIGTERM, SIGHUP] {
+            signal(signalNumber, SIG_IGN)
+            let source = DispatchSource.makeSignalSource(signal: signalNumber, queue: .main)
+            source.setEventHandler { [weak self] in
+                self?.removeCapsLockMapping()
+                exit(0)
+            }
+            source.resume()
+            terminationSignalSources.append(source)
+        }
+    }
+
+    private func removeCapsLockMapping() {
+        guard hardwareMappingInstalled else {
+            return
+        }
+
+        clearHIDMapping()
+        hardwareMappingInstalled = false
+        log("removed Caps Lock -> Left Control mapping")
     }
 
     private func checkAccessibilityPermission() -> Bool {
@@ -257,18 +456,28 @@ private final class KeebsDaemon {
     }
 
     private func handleKeyDown(proxy: CGEventTapProxy, event: CGEvent) -> Unmanaged<CGEvent>? {
-        let keyCode = event.keyCode
-        let flags = event.flags
-        traceKey("down", keyCode: keyCode, flags: flags)
+        let originalKeyCode = event.keyCode
+        traceKey("down", keyCode: originalKeyCode, flags: event.flags)
 
         if hyperMode.isActive {
             return handleHyperKeyDown(event)
         }
 
         if rightCommandIsDown {
-            suppressedHyperKeyUps.insert(keyCode)
+            suppressedHyperKeyUps.insert(originalKeyCode)
             return nil
         }
+
+        if let mapping = activeKeyMappings[originalKeyCode]
+            ?? matchingKeyMapping(keyCode: originalKeyCode, flags: event.flags)
+        {
+            activeKeyMappings[originalKeyCode] = mapping
+            mapping.apply(to: event)
+            traceKey("mapped", keyCode: event.keyCode, flags: event.flags)
+        }
+
+        let keyCode = event.keyCode
+        let flags = event.flags
 
         if isCtrlSpace(keyCode: keyCode, flags: flags) {
             setMarkMode(!markMode, reason: "ctrl-space")
@@ -300,16 +509,23 @@ private final class KeebsDaemon {
     }
 
     private func handleKeyUp(_ event: CGEvent) -> Unmanaged<CGEvent>? {
-        let keyCode = event.keyCode
-        traceKey("up", keyCode: keyCode, flags: event.flags)
+        let originalKeyCode = event.keyCode
+        traceKey("up", keyCode: originalKeyCode, flags: event.flags)
 
-        if suppressedHyperKeyUps.remove(keyCode) != nil {
+        if suppressedHyperKeyUps.remove(originalKeyCode) != nil {
             return nil
         }
 
         if hyperMode.isActive || rightCommandIsDown {
             return nil
         }
+
+        if let mapping = activeKeyMappings.removeValue(forKey: originalKeyCode) {
+            mapping.apply(to: event)
+            traceKey("mapped up", keyCode: event.keyCode, flags: event.flags)
+        }
+
+        let keyCode = event.keyCode
 
         if suppressCtrlSpaceKeyUp, keyCode == KeyCode.space {
             suppressCtrlSpaceKeyUp = false
@@ -327,6 +543,10 @@ private final class KeebsDaemon {
         }
 
         return Unmanaged.passUnretained(event)
+    }
+
+    private func matchingKeyMapping(keyCode: CGKeyCode, flags: CGEventFlags) -> KeyMapping? {
+        keyMappings.first { $0.matches(keyCode: keyCode, flags: flags) }
     }
 
     private func handleHyperKeyDown(_ event: CGEvent) -> Unmanaged<CGEvent>? {
@@ -820,6 +1040,14 @@ private extension CGEvent {
 }
 
 private extension CGEventFlags {
+    static let keyMappingModifiers: CGEventFlags = [
+        .maskShift,
+        .maskControl,
+        .maskAlternate,
+        .maskCommand,
+        .maskSecondaryFn
+    ]
+
     var keebsDescription: String {
         var parts: [String] = []
 
@@ -867,10 +1095,17 @@ private struct Arguments {
     }
 }
 
-private let arguments = Arguments(CommandLine.arguments)
-private let daemon = KeebsDaemon(
-    debug: arguments.debug,
-    trace: arguments.trace,
-    tapLocation: arguments.tapLocation
-)
-daemon.start()
+if let watchdogIndex = CommandLine.arguments.firstIndex(of: "--hid-watchdog"),
+   CommandLine.arguments.indices.contains(CommandLine.arguments.index(after: watchdogIndex)),
+   let parentPID = pid_t(CommandLine.arguments[CommandLine.arguments.index(after: watchdogIndex)])
+{
+    runHIDWatchdog(parentPID: parentPID)
+} else {
+    let arguments = Arguments(CommandLine.arguments)
+    let daemon = KeebsDaemon(
+        debug: arguments.debug,
+        trace: arguments.trace,
+        tapLocation: arguments.tapLocation
+    )
+    daemon.start()
+}
