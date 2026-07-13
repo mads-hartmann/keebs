@@ -169,6 +169,8 @@ private let keyMappings: [KeyMapping] = [
     KeyMapping(KeyCode.d, [.maskCommand, .maskControl], to: KeyCode.rightArrow, allowsOtherModifiers: true),
 
     KeyMapping(KeyCode.d, .maskAlternate, to: KeyCode.deleteForward, .maskAlternate),
+    KeyMapping(KeyCode.a, .maskControl, to: KeyCode.leftArrow, .maskCommand),
+    KeyMapping(KeyCode.e, .maskControl, to: KeyCode.rightArrow, .maskCommand),
     KeyMapping(KeyCode.p, .maskControl, to: KeyCode.upArrow, allowsOtherModifiers: true),
     KeyMapping(KeyCode.b, .maskControl, to: KeyCode.leftArrow, allowsOtherModifiers: true),
     KeyMapping(KeyCode.f, .maskControl, to: KeyCode.rightArrow, allowsOtherModifiers: true),

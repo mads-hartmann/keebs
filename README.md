@@ -46,6 +46,10 @@ Down Arrow
 `Ctrl-Space Ctrl-n` follows the same path as `Ctrl-Space Down Arrow` and emits
 `Shift-Down Arrow`.
 
+`keebs` similarly maps `Ctrl-a` and `Ctrl-e` to `Command-Left Arrow` and
+`Command-Right Arrow`. Mark mode then adds `Shift` to the mapped navigation
+event, extending the selection to the beginning or end of the line.
+
 ## Mapping Layers
 
 Chord mappings are defined as `KeyMapping` values in `Sources/keebs/main.swift`.
@@ -73,6 +77,7 @@ previous Karabiner-Elements configuration:
 - `Command-Control-H/J/K/L` → left/down/up/right
 - `Command-Control-A/S/W/D` → left/down/up/right
 - `Control-P/B/F/N` → up/left/right/down
+- `Control-A/E` → `Command-Left/Right`
 - `Control-G` → `Escape`
 - `Control-V` → `Page Down`; `Option-V` → `Page Up`
 - `Option-B/F` → `Option-Left/Right`
@@ -90,6 +95,7 @@ The first version should add `Shift` to navigation keys such as:
 - `Home` / `End`
 - navigation keys with existing modifiers, such as `Option-Right Arrow` or
   `Command-Left Arrow`
+- `Control-A` / `Control-E`, which select to the beginning / end of the line
 
 The initial configuration includes the Emacs movement bindings that previously
 lived in Karabiner-Elements.
