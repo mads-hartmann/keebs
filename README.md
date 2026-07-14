@@ -13,7 +13,7 @@ are applied before mark mode:
 | --- | --- |
 | `Caps Lock` | `Control` |
 | `Command-Control-H/J/K/L` | Left/Down/Up/Right |
-| `Command-Control-A/S/W/D` | Left/Down/Up/Right |
+| `Command-Control-S/W/D` | Down/Up/Right |
 | `Control-P/B/F/N` | Up/Left/Right/Down |
 | `Control-A/E` | `Command-Left/Right` |
 | `Control-G` | `Escape` |
