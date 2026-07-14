@@ -1,223 +1,103 @@
 # keebs
 
-A tiny macOS keyboard remapper for personal key mappings, Emacs-style active
-mark selection, and latched hyper-key chords.
+A small, personal macOS keyboard remapper with Emacs-style mark selection and
+latched key sequences. It runs as a Swift daemon using a
+[`CGEventTap`](https://developer.apple.com/documentation/coregraphics/cgevent/tapcreate%28tap%3Aplace%3Aoptions%3Aeventsofinterest%3Acallback%3Auserinfo%3A%29).
 
-The narrow scope is: toggle a mark state, then add `Shift` to keypresses while
-that state is active. Since most macOS apps already interpret shifted movement
-keys as selection extension, this gives us an application-agnostic way to get
-the Emacs-style active region workflow across different apps.
+## Key mappings
 
-## Goal
+Mappings are hardcoded as `KeyMapping` values in `Sources/keebs/main.swift` and
+are applied before mark mode:
 
-Make `Ctrl-Space` behave like a lightweight Emacs active mark workflow in macOS
-text fields and apps.
+| Input | Output |
+| --- | --- |
+| `Caps Lock` | `Control` |
+| `Command-Control-H/J/K/L` | Left/Down/Up/Right |
+| `Command-Control-A/S/W/D` | Left/Down/Up/Right |
+| `Control-P/B/F/N` | Up/Left/Right/Down |
+| `Control-A/E` | `Command-Left/Right` |
+| `Control-G` | `Escape` |
+| `Control-V` / `Option-V` | `Page Down` / `Page Up` |
+| `Option-B/F` | `Option-Left/Right` |
+| `Option-D` | `Option-Delete Forward` |
 
-In Emacs terms, the relevant ideas are:
+`Caps Lock` is mapped through macOS's
+[HID key-mapping facility](https://developer.apple.com/library/archive/technotes/tn2450/)
+while keebs is running. The mapping is removed on normal shutdown and by a
+watchdog after a crash. Keebs will not install it when another HID mapping
+already exists.
 
-- `point`: the current cursor position
-- `mark`: a saved position
-- `region`: the text between point and mark
-- `set-mark-command`: usually bound to `Ctrl-Space`
-- `transient-mark-mode`: shows the active region as a visible selection
+## Mark mode
 
-For this project, "mark mode" means our own keyboard-level state where movement
-commands extend the current selection.
+Press `Control-Space` to toggle mark mode. A HUD remains visible while it is
+active.
 
-## MVP Behavior
+Mark mode adds `Shift` to navigation events, including:
 
-- `Ctrl-Space` toggles mark mode.
-- While mark mode is active, movement keypresses get `Shift` added.
-- Configured movement bindings are applied before mark mode.
-- Editing/action keys deactivate mark mode.
-- Regular typing deactivates mark mode and sends the key as-is.
-- A small HUD is shown while mark mode is active.
+- Arrow keys, Home, End, Page Up, and Page Down
+- Navigation with existing modifiers, such as `Option-Right`
+- Mapped movement keys such as `Control-N`
+- `Control-A/E`, producing `Shift-Command-Left/Right`
 
-Example pipeline:
+This extends the current selection using the normal macOS navigation behavior.
+Mark mode is deactivated by:
 
-```text
-Down Arrow
-  -> mark mode is active
-  -> add Shift
-  -> emit Shift-Down Arrow
-```
+- `Escape`, Delete, or Backspace
+- `Control-G`, which emits `Escape`
+- `Command-X` or `Command-V`
+- Regular typing
+- A mouse click or application switch
+- Starting a hyper sequence
 
-`keebs` maps `Ctrl-n` to `Down Arrow` before mark mode sees it. Consequently,
-`Ctrl-Space Ctrl-n` follows the same path as `Ctrl-Space Down Arrow` and emits
-`Shift-Down Arrow`.
+## Hyper sequences
 
-`keebs` similarly maps `Ctrl-a` and `Ctrl-e` to `Command-Left Arrow` and
-`Command-Right Arrow`. Mark mode then adds `Shift` to the mapped navigation
-event, extending the selection to the beginning or end of the line.
+Tap `Right Command` to latch hyper mode and show its HUD. The real Command
+modifier is suppressed. Press `Right Command` again, click the mouse, or switch
+applications to cancel.
 
-## Mapping Layers
+- `Right Command`, `r`, `w`: switch windows in [Raycast](https://www.raycast.com/)
+- `Right Command`, `r`, `c`: Raycast clipboard history
+- `Right Command`, `r`, `k`: Raycast confetti
+- `Right Command`, `r`, `s`: Raycast snippet search
+- `Right Command`, `r`, `i`: Raycast screenshot search
+- `Right Command`, `r`, `n`: Raycast notes
+- `Right Command`, `a`, `t`: open Ghostty
+- `Right Command`, `a`, `e`: open Visual Studio Code
 
-Chord mappings are defined as `KeyMapping` values in `Sources/keebs/main.swift`.
-A mapping translates one key plus modifiers to another key plus modifiers. The
-same translation is retained until key-up, so applications always receive a
-matching down/up pair. Caps Lock is mapped to Left Control through macOS's HID
-mapping facility while keebs is running. keebs removes that mapping on shutdown;
-an independent watchdog also removes it if keebs is killed or crashes. To avoid
-destroying user configuration, keebs refuses to install its mapping when another
-HID mapping already exists.
-
-```mermaid
-flowchart LR
-    A["Physical key event"] --> B["Lifecycle-scoped HID mapping<br/>⇪ → ⌃"]
-    B --> C["Hyper-key chords"]
-    C --> D["Chord mappings<br/>⌃N → ↓"]
-    D --> E["Mark mode / Shift Lock<br/>active: add ⇧"]
-    E --> F["Application<br/>⇧↓"]
-```
-
-The built-in configuration mirrors the remaining basic mappings from the
-previous Karabiner-Elements configuration:
-
-- `Caps Lock` → `Control`
-- `Command-Control-H/J/K/L` → left/down/up/right
-- `Command-Control-A/S/W/D` → left/down/up/right
-- `Control-P/B/F/N` → up/left/right/down
-- `Control-A/E` → `Command-Left/Right`
-- `Control-G` → `Escape`
-- `Control-V` → `Page Down`; `Option-V` → `Page Up`
-- `Option-B/F` → `Option-Left/Right`
-- `Option-D` → `Option-Delete Forward`
-
-Caps Lock is the only mapping outside the event-tap layer because macOS updates
-modifier state before the tap receives the event.
-
-## Initial Keys
-
-The first version should add `Shift` to navigation keys such as:
-
-- arrow keys
-- `Page Up` / `Page Down`
-- `Home` / `End`
-- navigation keys with existing modifiers, such as `Option-Right Arrow` or
-  `Command-Left Arrow`
-- `Control-A` / `Control-E`, which select to the beginning / end of the line
-
-The initial configuration includes the Emacs movement bindings that previously
-lived in Karabiner-Elements.
-
-## Deactivation
-
-The first version should deactivate mark mode on:
-
-- `Escape`
-- `Ctrl-g`, emitting `Escape`
-- `Delete` / `Backspace`
-- `Command-x`
-- `Command-v`
-- mouse click
-- app switch
-- regular typing, with the typed key sent unchanged
-
-Typing letters should not get `Shift` applied. Caps Lock already exists for
-that. A typed character should leave mark mode and pass through unchanged.
-
-## Hyper Chords
-
-`Right Command` acts as a personal hyper key. Tap it to open a HUD and latch
-hyper mode, then release it and enter the chord normally. The real Command
-modifier is suppressed so apps do not see it. Pressing `Right Command` again
-cancels hyper mode.
-
-The current chord map is hardcoded:
-
-- Tap `Right Command`, then `r`: Raycast layer
-  - `w`: `open -g raycast://extensions/raycast/navigation/switch-windows`
-  - `c`: `open -g raycast://extensions/raycast/clipboard-history/clipboard-history`
-  - `k`: `open -g raycast://extensions/raycast/raycast/confetti`
-  - `s`: `open -g raycast://extensions/raycast/snippets/search-snippets`
-  - `i`: `open -g raycast://extensions/raycast/screenshots/search-screenshots`
-  - `n`: `open -g raycast://extensions/raycast/raycast-notes/raycast-notes`
-- Tap `Right Command`, then `a`: Applications layer
-  - `t`: `open -a Ghostty`
-  - `e`: `open -a "Visual Studio Code"`
-
-Completing a chord launches the target with `/usr/bin/open`, closes the HUD, and
-exits hyper mode immediately. Pressing an unknown key while the HUD is open also
-closes the HUD, consumes the key, and does nothing.
-
-## Non-Goals
-
-- General Karabiner JSON compatibility
-- Device-specific rules
-- App-specific rules
-- Input-source rules
-- Mouse key emulation
-- Multiple profiles
-
-Those can come later if they become useful, but the project starts with the
-active mark workflow only.
+A completed sequence launches its target with `/usr/bin/open` and exits hyper
+mode. An unknown key is consumed and cancels the sequence.
 
 ## Alternatives
 
-### Karabiner-Elements
+### [Karabiner-Elements](https://karabiner-elements.pqrs.org/)
 
-Karabiner-Elements can already approximate this workflow, but the configuration
-becomes awkward because mark mode has to redefine every movement binding with
-`Shift` added. This project tries a smaller model: keep movement bindings
-elsewhere, and only add `Shift` while mark mode is active.
+Karabiner-Elements can implement the key mappings and approximate mark mode,
+but adding `Shift` while mark mode is active requires separate rules for every
+movement binding. Keebs keeps the movement mappings independent and applies
+mark mode as a generic step after them.
 
-## Likely Implementation
+## Build and run
 
-Start with a small Swift daemon using a `CGEventTap`.
-
-The event pipeline is:
-
-```text
-read keyboard event
-  -> normalize key and modifiers
-  -> handle hyper-key chords and app launchers
-  -> apply configured key mappings
-  -> handle mark mode toggles/cancellations
-  -> if mark mode is active and event is navigation, add Shift
-  -> if mark mode is active and event is typing/action, deactivate mark mode
-  -> emit synthetic event or pass through original
-```
-
-If a pure event tap is not reliable enough for modifier behavior, we can later
-add a virtual HID backend. That should be a later step, not part of the first
-prototype.
-
-## Running
-
-Build the daemon:
+Requires macOS 14 or later and Swift 5.9 or later.
 
 ```sh
 swift build
-```
-
-Run it:
-
-```sh
 swift run keebs --debug
 ```
 
-The first run needs permissions in System Settings > Privacy & Security:
+Grant keebs Accessibility and Input Monitoring access in **System Settings →
+Privacy & Security**, then restart it.
 
-- Accessibility
-- Input Monitoring
-
-After granting permission, restart the daemon.
-
-For event-level debugging, run:
+Use `--trace` to log individual key events:
 
 ```sh
 swift run keebs --trace
 ```
 
-If `Ctrl-Space` does not appear in the trace, macOS or another tool may be
-handling it before the annotated session tap. Try the earlier session tap:
+The default [event-tap location](https://developer.apple.com/documentation/coregraphics/cgeventtaplocation)
+is `annotated`. If another tool intercepts a shortcut before keebs sees it, try
+the earlier session tap:
 
 ```sh
 swift run keebs --trace --tap session
-```
-
-The default is:
-
-```sh
-swift run keebs --trace --tap annotated
 ```
